@@ -30,6 +30,7 @@ THE SOFTWARE.
 
 import sys
 import os
+import logging
 
 try:
     import argparse
@@ -124,153 +125,183 @@ def parse_arguments(args):
         "--reorder",
         action="store_true",
         help="print the sequences in the same order as the input files")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="print diagnostics")
     
     return parser.parse_args()
 
+'''
+    run_command(args.bowtie2,args.pair1,args.pair2,args.orphan,args.index,args.sam,args.threads,args.bowtie2_options,args.reorder)
 
-def run_bowtie2(bowtie2_path,pair1,pair2,orphans,database,sam,threads,options,reorder):
-    """ Run bowtie2 with the options provided """
+def run_command(bowtie2_path,pair1,pair2,orphans,database,sam,threads,options,reorder):
+'''
 
-    command=[bowtie2_path]
-    # if pairs are to be run as single end, then provide them all as orphans
-    if orphans:
-        orphans=",".join([pair1,pair2,orphans])
-    else:
-        orphans=",".join([pair1,pair2])
+def bowtie2_unpaired_command(input_fastq_path, output_sam_path, index, threads, bowtie2_options, maintain_input_ordering):
+
+    # Bowtie2 from input as unpaired reads to output, using the provided index
+    command=[bowtie2_path, "-U", input_fastq_path, "-S", output_sam_path, "-x", index]
     
-    command+=["--threads",str(threads),"-x",database,"-S",sam,"--no-head"]
-    if orphans:
-        command+=["-U",orphans]
-    if options:
-        command+=utilities.format_options_to_list([options])
-    if reorder:
-        command+=["--reorder"]
 
+    # Runtime options
+    command+=["--threads",str(threads)]
+    if bowtie2_options:
+        command+=utilities.format_options_to_list([bowtie2_options])
+   
+    # Maintain ordering of the fastq, if required
+    if maintain_input_ordering:
+    command += ["--reorder"]
+
+    return command
+
+def run_command(command, **kwargs):
     try:
-        return_code=subprocess.check_call(command)
+        return_code=subprocess.check_call(command, **kwargs)
     except (EnvironmentError, subprocess.CalledProcessError) as e:
-        message="Unable to run bowtie2: " +" ".join(command)
+        message="Unable to run: " +" ".join(command)
         if hasattr(e, 'output') and e.output:
-            message+="\nError message returned from bowtie2:\n" + e.output
+            message+="\nError message returned:\n" + e.output
         sys.exit(message)
     
-def organize_alignments_single(sam,open_files,counts,mode):
-    """ Organize the alignments that were generated running the pairs as single end reads """
-    
-    # read through the sam file, organizing reads by those that aligned 
-    aligned={}
-    unaligned={}
-    with open(sam) as file_handle:
-        for line in file_handle:
-            data=line.rstrip().split("\t")
-            flag=int(data[1])
-            
-            query_id = data[0][:-1]
-            pair1 = False if data[0][-1] == "2" else True
-            
-            # check if the read aligned
-            if flag & 4:
-                # this read did not align to the reference
-                if not query_id in unaligned:
-                    unaligned[query_id]=set()
-                unaligned[query_id].add(pair1)
-            else:
-                # this read aligned to the reference
-                if not query_id in aligned:
-                    aligned[query_id]=set()
-                aligned[query_id].add(pair1)
-               
-    # if running in strict mode, for all pairs with a single alignment
-    # also filter out the other pair
-    if mode == "strict":
-        for query_id in aligned:
-            if len(aligned[query_id]) == 1 and len(unaligned.get(query_id,[])) == 1:
-                aligned[query_id].update(unaligned[query_id])
-                unaligned[query_id]=set()
- 
-    # read through the sam file again to write the reads to the output files
-    with open(sam) as file_handle:
-        for line in file_handle:
-            data=line.rstrip().split("\t")
-            
-            query_id = data[0][:-1]
-            pair1 = False if data[0][-1] == "2" else True
-            
-            # check the alignment type of this query
-            align_values = aligned.get(query_id,[])
-            unalign_values = unaligned.get(query_id,[])
-            
-            if len(align_values) > 1:
-                # both reads in the pair aligned to the reference
-                file_name = "pair1_aligned" if pair1 else "pair2_aligned"
-            elif len(unalign_values) > 1:
-                # both reads did not align to the reference
-                file_name = "pair1_unaligned" if pair1 else "pair2_unaligned"
-            elif pair1 in align_values:
-                # only this read from the pair aligned to the reference
-                file_name = "orphan1_aligned" if pair1 else "orphan2_aligned"
-            elif pair1 in unalign_values:
-                # only this read from the pair did not align to the reference
-                file_name = "orphan1_unaligned" if pair1 else "orphan2_unaligned"
 
-            # write the read to the file
-            open_files[file_name].write("\n".join(["@"+data[0],data[9],"+",data[10]])+"\n")
-            # increase the count
-            counts[file_name]=counts[file_name]+1                
-    
+def read_sam_line(line):
+    data=line.rstrip().split("\t")
 
-def process_alignments(sam,aligned_pair,unaligned_pair,aligned_orphan,unaligned_orphan,mode):
-    """ Read through the sam alignments and organize into the output files """
-    
-    # open the output files
-    pair1_aligned=open(aligned_pair.replace("%","1"),"wt")
-    pair2_aligned=open(aligned_pair.replace("%","2"),"wt")
-    
-    pair1_unaligned=open(unaligned_pair.replace("%","1"),"wt")
-    pair2_unaligned=open(unaligned_pair.replace("%","2"),"wt")
-    
-    orphan1_aligned=open(aligned_orphan.replace("%","1"),"wt")
-    orphan2_aligned=open(aligned_orphan.replace("%","2"),"wt")
-    
-    orphan1_unaligned=open(unaligned_orphan.replace("%","1"),"wt")
-    orphan2_unaligned=open(unaligned_orphan.replace("%","2"),"wt")  
-    
-    open_files={"pair1_aligned":pair1_aligned,"pair2_aligned":pair2_aligned,
-                "pair1_unaligned":pair1_unaligned,"pair2_unaligned":pair2_unaligned,
-                "orphan1_aligned":orphan1_aligned,"orphan2_aligned":orphan2_aligned,
-                "orphan1_unaligned":orphan1_unaligned,"orphan2_unaligned":orphan2_unaligned}
-    counts={name:0 for name in open_files.keys()}  
-    
-    organize_alignments_single(sam,open_files,counts,mode)
-            
-    # close all of the files
-    for file_name, file_handle in open_files.items():
-        file_handle.close()
-        
-    # write out the counts for each file
-    for file_name,total in counts.items():
-        print(file_name+" : "+str(total))
-    
+    query_id = data[0][:-1]
+    mate = data[0][-1]
+    is_aligned = int(data[1]) & 4
+    read="\n".join(["@"+data[0],data[9],"+",data[10]])
+    return (query_id, mate, is_aligned, read)
+
+def process_alignments(pair1_sam, pair2_sam, orphan_sam, aligned_pair, unaligned_pair, aligned_orphan, unaligned_orphan, treat_pair_as_aligned_if_either_read_aligned):
+    """ Read through the paired sam alignments and organize into the output files """
+
+    open_files={
+       1: {
+         'both_aligned': open(aligned_pair.replace("%","1"),"wt"),
+         'both_unaligned': open(unaligned_pair.replace("%","1"),"wt")},
+         'only_this_aligned': open(aligned_orphan.replace("%","1"),"wt")},
+         'only_this_unaligned': open(unaligned_orphan.replace("%","1"),"wt")},
+       },
+       2: {
+         'both_aligned': open(aligned_pair.replace("%","1"),"wt"),
+         'both_unaligned': open(unaligned_pair.replace("%","1"),"wt")},
+         'only_this_aligned': open(aligned_orphan.replace("%","1"),"wt")},
+         'only_this_unaligned': open(unaligned_orphan.replace("%","1"),"wt")},
+       }
+    }
+    counts={
+         'both_aligned': 0,
+         'both_unaligned': 0,
+         'only_this_aligned': 0,
+         'only_this_unaligned': 0
+    }
+
+
+    with open(pair1_sam) as fh_1, open(pair2_sam) as fh_2:
+        line_1=fh_1.readline()
+        line_2=fh_2.readline()
+        line_count = 1
+        while line_1 and line_2:
+            query_id_1, mate_1, is_aligned_1, read_1 = read_sam_line(line_1)
+            query_id_2, mate_2, is_aligned_2, read_2 = read_sam_line(line_2)
+            if not (query_id_1 == query_id_2 and mate_1 != mate_2):
+                raise ValueError(
+                    "sam files do not match on line {0}: found IDs {1}{2} and {3}{4}"
+                        .format(line_count, query_id_1, mate_1, query_id_2, mate_2)
+                )
+            aa = is_aligned_1 && is_aligned_2 || (treat_pair_as_aligned_if_either_read_aligned && (is_aligned_1 || is_aligned_2))
+
+            x1 = aa ? 'both_aligned'
+                 : is_aligned_1 ? 'only_this_aligned'
+                 : is_aligned_2 ? 'only_this_unaligned'
+                 : 'both_unaligned'
+
+            x2 = aa ? 'both_aligned'
+                 : is_aligned_2 ? 'only_this_aligned'
+                 : is_aligned_1 ? 'only_this_unaligned'
+                 : 'both_unaligned'
+                
+            counts[x1]++
+            open_files[1][x1].write(read_1)
+            open_files[2][x2].write(read_2)
+            line_1=fh_1.readline()
+            line_2=fh_2.readline()
+            line_count+=1
+
+    logging.info("Read pairs: {0} both aligned, {1} both unaligned, {2} only pair1 aligned, {3} only pair2 aligned"
+     .format(counts["both_aligned"], counts["both_unaligned"], counts["only_this_aligned"], counts["only_this_unaligned"])
+    )
+    if orphan_sam:
+        orphan_counts = {'only_this_aligned' : 0, 'only_this_unaligned': 0}
+        with open(orphan_sam) as fh:
+            line = fh.readline()
+            while line:
+                query_id, mate, is_aligned, read = read_sam_line(line)
+                m = mate == '2' ? 2 : 1
+                x = is_aligned ? 'only_this_aligned' : 'only_this_unaligned'
+                orphan_counts[x]++
+                open_files[m][x].write(read)
+                line = fh.readline()
+        logging.info("Orphan reads: {0} aligned, {1} unaligned"
+          .format(orphan_counts["only_this_aligned"], orphan_counts["only_this_unaligned"])
+        )
+
+    for fh in open_files[1].values():
+       fh.close()
+    for fh in open_files[2].values():
+       fh.close()
+
+def temp_sam_path(args, name):
+    output_dir=os.path.dirname(args.un_pair)
+    file_out, args.sam = tempfile.mkstemp("kneaddata_"+name, suffix=".sam", dir=output_dir)
+    os.close(file_out)
+    return file_out
 
 def main():
     # parse the command line arguments
     args = parse_arguments(sys.argv)
-    
-    # if no sam output is provided or it is set to dev/null, write to temp file
-    output_dir=os.path.dirname(args.un_pair)
-    temp_files=[]
-    if args.sam is None or args.sam == os.devnull:
-        file_out, args.sam = tempfile.mkstemp("kneaddata_", "_temp.sam", dir=output_dir)
-        os.close(file_out)
-        temp_files.append(args.sam)
-    
-    # run bowtie2
-    run_bowtie2(args.bowtie2,args.pair1,args.pair2,args.orphan,args.index,args.sam,args.threads,args.bowtie2_options,args.reorder)
-    
-    # write output files
-    process_alignments(args.sam,args.al_pair,args.un_pair,args.al_single,args.un_single,args.mode)
-    
-    # remove the temp files
+
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+
+    pair1_sam=temp_sam_path(args, "pair1")
+    temp_files.append(pair1_sam)
+    command=bowtie2_unpaired_command(input_fastq_path = args.pair1, output_sam_path = pair1_sam, **args, maintain_input_ordering = True)
+    logging.info("Aligning pair1 reads: "+ " ".join(command))
+    run_command(command)
+
+    pair2_sam=temp_sam_path(args, "pair2")
+    temp_files.append(pair2_sam)
+    command=bowtie2_unpaired_command(input_fastq_path = args.pair2, output_sam_path = pair2_sam, **args, maintain_input_ordering = True)
+    logging.info("Aligning pair2 reads: "+ " ".join(command))
+    run_command(command)
+
+    orphan_sam = None
+    if args.orphan:
+        orphan_sam=temp_sam_path(args, "orphan")
+        temp_files.append(orphan_sam)
+        command=bowtie2_unpaired_command(input_fastq_path = args.orphan, output_sam_path = orphan_sam, **args, maintain_input_ordering = args.reorder)
+        logging.info("Aligning orphan reads: "+ " ".join(command))
+        run_command(command)
+
+    logging.info("Processing the alignments")
+    process_alignments(pair1_sam, pair2_sam, orphan_sam,
+      aligned_pair = args.al_pair,
+      unaligned_pair = args.un_pair,
+      aligned_orphan = args.al_single,
+      unaligned_orphan = args.un_single,
+      treat_pair_as_aligned_if_either_read_aligned = (args.mode == "strict")
+    )
+
+    if args.sam and args.sam != os.devnull:
+    logging.info("Aggregating .sam output to " + args.sam)
+    command = ["cat"]
+    command.extend(temp_files)
+    run_command(command, stdout = args.sam)
+
+    logging.info("Removing temporary files")
     for file in temp_files:
         utilities.remove_file(file)
 

@@ -501,7 +501,7 @@ class TestFunctionalKneadData(unittest.TestCase):
         utils.remove_temp_folder(tempdir)
         
     @skipIfExeNotFound(config.bowtie2_exe)
-    def test_bowtie2_only_paired_end_remove_intermedite_temp_output(self):
+    def test_bowtie2_only_paired_end_remove_intermediate_temp_output(self):
         """
         Test running the default flow of trimmomatic on paired end input with a
         bowtie2 database provided
